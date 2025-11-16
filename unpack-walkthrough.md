@@ -21,7 +21,7 @@
 
 ### 2\. Logic Walk-Through
 
-A deconstruction of the main logic flow and internal procedures, validating syntax against the provided documentation.
+A deconstruction of the main logic flow and internal procedures, validating syntax against the `Basic09-only-reference.md` and incorporating analysis from the `About unidentified gaps in the DSAT` document.
 
 #### Main Logic (`PROCEDURE unpack`)
 
@@ -72,9 +72,24 @@ A deconstruction of the main logic flow and internal procedures, validating synt
           * **Type Check:** The code checks `header.tl` and `header.hp` to identify I-Code.
           * If it is not I-Code (`header.tl<>$22`), it reads the `oheader` structure, parses the name using a `REPEAT...UNTIL` loop, prints a "NOT I-CODE\!" message, sets `skipped:=TRUE`, and updates the `start` pointer to skip the module.
           * **I-Code Processing:** If `NOT(skipped)`:
+              * **Offset Calculation:** It calculates the absolute offsets for the execution area (`execoff`), Symbol Table (`symtabOff`), and Description Area (`descOff`).
+              * **DSAT Identification:** The `descOff` variable points to the start of the **DSAT (Description area or Data Storage Allocation Table)**. As described in the "About unidentified gaps in the DSAT" document, this is not a simple table but a complex, packed data structure.
+              * **DSAT Structure:** This area contains "unidentified gaps" interleaved with "validated" data definitions. The "unidentified gaps" contain metadata for `TYPE` definitions (e.g., total size, field offsets), as defined by the `TYPE GAPS` structure in the DSAT analysis document. The "validated" sections represent data for `STRING`, `ARRAY`, or `RECORD` variables that are defined *before* the `TYPE`s that use them.
               * It creates an output file: `CREATE #outpath,outname:WRITE`. (Valid: "CREATE statement")
               * It `PRINT`s the `PROCEDURE` line to standard output (default path \#1) and the output file (path `#outpath`).
-              * **External Modules:** It calls `RUN part(...)` three times (for "udecode", "udefVars", and "ubuildSrc"), executing `KILL part` and `SHELL "UnLink ..."` after each. (Valid: "RUN", "KILL Statement", "SHELL Statement")
+              * **External Module Calls:** The `unpack` procedure delegates the complex parsing of the DSAT to external procedures.
+              * `(* Load part 1 *)`
+              * `part:="udecode"`
+              * `RUN part(...)`
+              * **Analysis:** This external procedure is responsible for the initial parsing of the DSAT located at `descOff`. It must read and interpret the complex, non-linear structure of "gaps" and "validated" sections to identify and reconstruct the `TYPE` definitions.
+              * `(* Load part 2 *)`
+              * `part:="udefVars"`
+              * `RUN part(...)`
+              * **Analysis:** This procedure continues processing the DSAT to define `DIM` variables based on the `TYPE` definitions resolved by `udecode`. It associates `DIM` declarations with their complex `TYPE`s, using the information parsed from the DSAT.
+              * `(* Load part 3 *)`
+              * `part:="ubuildSrc"`
+              * `RUN part(...)`
+              * **Analysis:** This procedure uses the parsed type and variable information (from `udecode` and `udefVars`) and data from the Symbol Table (`symtabOff`) to reconstruct the procedure's source code.
               * **Commented Code:** Lines prefixed with `!` are comments, per the documentation ("The '\!' character can be typed in place of the keyword REM"). The entire "Load part 4" section (lines 262-269) is commented out.
               * **Footer:** It dynamically builds a format string for `PRINT USING` using `STR$` and `LEN`. (Valid: "PRINT USING Statement", "STR$", "LEN")
               * It closes the output file: `CLOSE #outpath`. (Valid: "CLOSE Statement")
