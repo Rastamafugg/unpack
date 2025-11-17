@@ -1,443 +1,199 @@
-Analysis complete.
+**Code Maintenance Report**
 
-### 1\. Identified Procedures and Logic Blocks
+### 1\. Procedure & Data Analysis
 
-Based on the `INPUT_CODE`, the following logic units have been identified:
+Analysis of all procedures, their local data, and shared data structures.
 
-  * **Main Procedure:** `PROCEDURE udefVars`
-  * **Internal Subroutines (GOSUB):**
-      * `Line 200`: Display header/labels for variable references.
-      * `Line 250`: Display formatted data for a single variable record.
-      * `Line 267`: Display validation counts.
-      * `Line 410`: Variable name lookup from `DATA` statements.
-      * `Line 500`: Error trap handler.
-  * **External Procedures:**
-      * `PROCEDURE vSort`: Quicksort algorithm for variable records.
-      * `PROCEDURE fSort`: Bubble sort algorithm for field records.
+**User-Defined Data (`TYPE`)**
 
------
+*Note: The following `TYPE` definitions are declared locally within `PROCEDURE udefVars` and are used to structure its `DIM` variables. `vSort` and `fSort` redeclare these types to correctly interpret their `PARAM` and `DIM` variables.*
 
-### 2\. Logic Walk-Through
+* `TYPE VREC`: A record for the in-memory variable lookup table.
+    * `vTyp,nTyp:BYTE`
+    * `nVar:BOOLEAN`
+    * `vOff,vdOff,dsOff,dmOff,fOff,pOff:INTEGER`
+* `TYPE VFP1`: First part of a complex file record, holds pointers and sizes.
+    * `vdTkn:BYTE`
+    * `vdPtr,vdSiz,dsPtr,dsvSiz,dsSiz,dmSiz,fSiz,pSiz,elem1,elem2,elem3,vSRLen:INTEGER`
+* `TYPE VFP2`: Second part of a complex file record, holds strings and metadata.
+    * `vArray:STRING[19]`
+    * `vName:STRING[29]`
+    * `vStrLen:STRING[7]`
+    * `vRecNum,vRefCnt,intReal,pVar:INTEGER`
+* `TYPE VFP3`: Third part of a complex file record, holds type flags.
+    * `mTyp,vLnk,fNum:BYTE`
+    * `pRec,pFld:BOOLEAN`
+* `TYPE VFRC`: The complete variable file record, combining the three parts.
+    * `vp1:VFP1`
+    * `vp2:VFP2`
+    * `vp3:VFP3`
 
-#### A. `PROCEDURE udefVars` (Main Logic)
+**Procedure Interface & Storage**
 
-This procedure is the primary controller. It deconstructs a procedure's variable definitions and symbol table.
+* **`PROCEDURE udefVars`**
+    * **Parameters (`PARAM`):**
+        * `path:BYTE`: Input file path number for the main module.
+        * `er,tpVars:INTEGER`: Error code (by ref) and variable count.
+        * `pOpen,verbose:BOOLEAN`: Flags for file status and logging level.
+        * `modSize,execOff,descOff,symTabOff:REAL`: Offsets into the file.
+        * `dataDir:STRING[16]`: Path for data files.
+    * **Local Variables (`DIM`):**
+        * `varRec(400):VREC`: In-memory array for variable lookup.
+        * `varFRec:VFRC`: Working record for file I/O.
+        * `tokenCode,tokenByte,byteVal:BYTE`: Byte-level I/O variables.
+        * `iToken,vToken:BYTE`: Token counters.
+        * `recNum,mCount...recArraySize:INTEGER`: Numerous counters and pointers for offsets and sizes.
+        * `mSize:REAL`: Real-type size variable.
+        * `found,isSimple...first:BOOLEAN`: Numerous flags for parsing logic.
+        * `varRefs,varCount,varNum,fldNum:INTEGER`: Reference counters.
+        * `vPath,dPath,oPath:BYTE`: File path numbers for varDefs, procData, and output.
+        * `vOpen,dOpen,oOpen:BOOLEAN`: File open status flags.
+        * `which:INTEGER`: Error data.
+        * `vFile,dFile,oFile:STRING[29]`: File names.
+        * `numStr:STRING[4]`, `strLen:STRING[7]`, `tokenString:STRING[8]`, `arrayStr:STRING[19]`, `subName,tName:STRING[29]`: String manipulation variables.
+        * *Note:* `chainMod:STRING[177]` is commented out via `!`, which is an editor shortcut for `REM`.
 
-1.  **Initialization:**
-      * Sets `BASE 0` (array indices start at 0), initializes error flags, and sets the error trap `ON ERROR GOTO 500`.
-      * Constructs file paths (`vFile`, `dFile`) from the `dataDir` parameter.
-      * The `chainMod` string is commented out (using `!`, equivalent to `REM` per documentation).
-2.  **Data Loading:**
-      * Opens `dFile` (`procData`) for `READ`.
-      * Reads `hasRecords` (BOOLEAN) and the entire `varRec` array using `GET`.
-      * Closes `dFile`.
-      * Opens `vFile` (`varDefs`) for `UPDATE` (Read/Write).
-      * Reads `varCount` (INTEGER) from the start of `vFile`.
-      * Seeks to `descOff` (descriptor offset) in the main procedure file (`path`).
-3.  **Variable Identification Loop (`REPEAT` UNTIL `recNum=varCount`):**
-      * This is the core processing loop. It iterates `varCount` times.
-      * It seeks past the `varCount` integer at the start of `vFile` (`recNum*SIZE(varFRec)+2`).
-      * It reads one `varFRec` structure from `vFile` using `GET`.
-      * It retrieves the variable's type (`iToken`) and offset (`iPointer`) from the pre-loaded `varRec` array.
-      * **Type 1 (mTyp=1 - Simple Atomic):**
-          * `RESTORE 430` (points `READ` to atomic name `DATA`).
-          * `GOSUB 410` (finds and sets `tokenString`).
-          * Determines `dmSize` (1, 2, or 5 bytes) based on `tokenCode`.
-          * Stores data memory offset (`dmAddr`) and size (`dmSize`).
-      * **Type 2 (mTyp=2 - STRING):**
-          * Sets `isString:=TRUE`.
-          * `RESTORE 430`, `GOSUB 410` (get name).
-          * Follows `iPointer` (`dsAddr`) into the main file (`path`) to the DSAT (Data Structure Allocation Table).
-          * `GET`s the `dmAddr` (Data Memory address) and `dmSize` (string length) from the DSAT entry.
-          * Creates the `strLen` string (e.g., `"[32]"`).
-      * **Type 3 (mTyp=3 - VDT Reference):**
-          * Follows `iPointer` (`vAddr`) to the VDT (Variable Descriptor Table) in the main file (`symTabOff+vAddr`).
-          * `GET`s the `vToken` and `vPointer`.
-          * `RESTORE 420` (points `READ` to VDT name `DATA`).
-          * `GOSUB 410` (get name).
-          * **If `vToken=$A0` (Subroutine):** Reads the full subroutine name.
-          * **Else (Variable):** Enters a large `IF`/`THEN`/`ELSE` block to identify the variable's precise type (Simple, Field, Param, String, Record, Array) based on the `vToken` range.
-          * It follows the `vPointer` to the DSAT (`dsAddr`), reads the `dsPointer` and `dSize` from the DSAT entry, and, if an array, reads dimension sizes (`element1`, `element2`, `element3`).
-      * **Loop End:**
-          * `GOSUB 250` (prints verbose output if enabled).
-          * `SEEK`s back to the current record position in `vFile`.
-          * `PUT`s the (potentially updated) `varFRec` back into `vFile`.
-          * Increments `recNum`.
-4.  **Sorting:**
-      * `RUN vSort`: Calls the external quicksort procedure to sort `vFile` records and the `varRecs` array based on data memory offset (`dmOff`).
-      * Counts `fRecs` (field records) by reading `vFile` until the `vdTkn` is out of the field range.
-      * `RUN fSort`: Calls the external bubble sort procedure to sort the `fRecs` block at the beginning of the file based on variable offset (`vOff`).
-      * `OPEN`s `dFile` for `UPDATE` and `PUT`s the modified `hasRecords` flag and the sorted `varRec` array back to disk.
-5.  **Variable Naming:**
-      * Loops `varCount` times (`REPEAT`/`UNTIL`).
-      * `GET`s each `varFRec`.
-      * If `varRec(recNum).nVar` is `TRUE`, it generates a sequential name (e.g., `f001`, `V0001`, `P0001`) based on its type (`nTyp`) and writes it into `varFRec.vp2.vName`.
-      * It detects shared memory offsets (`dmOff`, `fOff`) to assign the same name to duplicate references.
-      * `PUT`s the updated `varFRec` back to `vFile`.
-6.  **Final Display and Validation:**
-      * `GOSUB 200` (prints headers).
-      * Loops `varCount` times, `GET`s each record, and `GOSUB 250` (prints formatted, sorted data).
-      * Validates the Symbol Table by reading the main file's VDT (`SEEK #path,symTabOff`) entry by entry (`GET #path,vToken,vPointer`).
-      * For each VDT entry, it searches `vFile` to ensure a "Validated" match exists.
-      * Prints final validation status.
-7.  **Termination:**
-      * `END`s the procedure.
+* **`PROCEDURE vSort`**
+    * **Parameters (`PARAM`):**
+        * `er,which:INTEGER`: Error code (by ref) and recursion counter.
+        * `vPath:BYTE`: File path number for the variable definitions file.
+        * `bottom,top:INTEGER`: Array bounds for the quicksort.
+        * `varRecs(400):VREC`: The in-memory variable lookup array (passed by reference).
+    * **Local Variables (`DIM`):**
+        * `varRec:VREC`: Temporary record for swapping `varRecs` array elements.
+        * `varFRec:VFRC`: Temporary record for file I/O.
+        * `varFRecs(2):VFRC`: Array to hold two file records for swapping.
+        * `lower,upper:INTEGER`: Loop counters for quicksort partitioning.
+        * `btemp:BOOLEAN`: Flag for loop condition.
 
-#### B. `PROCEDURE vSort`
+* **`PROCEDURE fSort`**
+    * **Parameters (`PARAM`):**
+        * `vPath:BYTE`: File path number for the variable definitions file.
+        * `recCount,varCount:INTEGER`: Loop counters.
+        * `varRecs(400):VREC`: The in-memory variable lookup array (passed by reference).
+    * **Local Variables (`DIM`):**
+        * `varRec:VREC`: Temporary record for swapping `varRecs` array elements.
+        * `varFRec:VFRC`: Temporary record for file I/O.
+        * `varFRecs(2):VFRC`: Array to hold two file records for swapping.
+        * `sortedInt:INTEGER`: Optimization counter for the bubble sort.
 
-1.  **Purpose:** A quicksort algorithm that sorts both an in-memory array (`varRecs`) and a parallel disk file (`vPath`) simultaneously.
-2.  **Logic:**
-      * Receives `vPath`, `bottom`, `top`, and the `varRecs` array as parameters (`PARAM`).
-      * Sets `BASE 0` and error trap `ON ERROR GOTO 10`.
-      * Implements a standard quicksort partitioning `LOOP` comparing `varRecs(n).dmOff`.
-      * **Swap Logic:** When a swap is required (e.g., for `lower` and `upper`), it:
-        1.  `SEEK`s and `GET`s the `lower` record from `vFile` into `varFRecs(0)`.
-        2.  `SEEK`s and `GET`s the `upper` record from `vFile` into `varFRecs(1)`.
-        3.  Swaps the `varRecs` array elements (`varRecs(lower)` and `varRecs(upper)`).
-        4.  Swaps the temporary buffer (`varFRecs(0)` and `varFRecs(1)`).
-        5.  `SEEK`s and `PUT`s the new `lower` record (from `varFRecs(0)`) to `vFile`.
-        6.  `SEEK`s and `PUT`s the new `upper` record (from `varFRecs(1)`) to `vFile`.
-      * **Recursion:** Calls `RUN vSort` for the remaining partitions.
+---
 
-#### C. `PROCEDURE fSort`
+### 2\. Call Graph (RUN & GOSUB)
 
-1.  **Purpose:** An optimized bubble sort algorithm, also sorting `varRecs` and `vFile` simultaneously.
-2.  **Logic:**
-      * Receives `vPath` and `varRecs` as parameters.
-      * Sets `BASE 0`.
-      * Uses a `REPEAT`/`UNTIL` loop.
-      * Compares adjacent elements: `varRecs(recCount).vOff > varRecs(recCount+1).vOff`.
-      * **Swap Logic:** If a swap is needed:
-        1.  Swaps the `varRecs` array elements (`varRecs(recCount)` and `varRecs(recCount+1)`).
-        2.  `SEEK`s to `recCount` in `vFile`.
-        3.  `GET`s 3 records into `varFRecs` (indices 0, 1, 2).
-        4.  Performs an in-memory swap: `varFRec := varFRecs(0)`, `varFRecs(0) := varFRecs(1)`, `varFRecs(1) := varFRec`.
-        5.  `SEEK`s back to `recCount`.
-        6.  `PUT`s the 3-record `varFRecs` buffer, effectively swapping the first two records on disk.
-        7.  Moves `recCount` backward (`ABS(recCount-1)`) to continue bubbling.
-      * If no swap, advances `recCount` to the next unsorted pair (`recCount:=sortedInt`).
+A map of inter-procedure (`RUN`) and intra-procedure (`GOSUB`) dependencies.
 
------
+* **`PROCEDURE udefVars`**
+    * `RUN vSort(er,which,vPath,0,varCount-1,varRec)`: Calls the quicksort procedure to sort the `varRec` array and the corresponding records in `vFile`.
+    * `RUN fSort(vPath,0,fRecs,varRec)`: Calls the bubble sort procedure to sort the field records.
+    * `GOSUB 200`: Prints headers for variable reference display.
+    * `GOSUB 250`: Prints a single formatted variable reference line.
+    * `GOSUB 267`: Prints a counter during VDT validation.
+    * `GOSUB 410`: Reads `DATA` statements to find a variable's base name.
 
-### 3\. Process and Workflow Synthesis (PWS) Templates
+* **`PROCEDURE vSort`**
+    * `RUN vSort(er,which,vPath,bottom,lower-1,varRecs)`: Recursive call for the lower partition.
+    * `RUN vSort(er,which,vPath,lower+1,top,varRecs)`: Recursive call for the upper partition.
+    * No `GOSUB` calls.
 
-#### A. PWS Template: `udefVars` (Procedure Deconstruction)
+* **`PROCEDURE fSort`**
+    * No `RUN` calls.
+    * No `GOSUB` calls.
 
-```
-(* ==================================== *)
-(* TEMPLATE: Procedure Deconstruction
-(* ==================================== *)
+---
 
-PROCEDURE DeconstructProc
-  (* 1. Define all data structures *)
-  TYPE VREC=...
-  TYPE VFRC=...
-  DIM varRec(...):VREC
-  DIM varFRec:VFRC
+### 3\. External Interaction Points
 
-  (* 2. Define parameters and local variables *)
-  DIM ...
-  PARAM path:BYTE; ...
+All statements that interact with the operating system, files, or hardware.
 
-  (* 3. Initialize Environment *)
-  BASE 0
-  er:=0
-  ON ERROR GOTO 500 (* Trap *)
+* **File I/O:**
+    * `PROCEDURE udefVars`: `OPEN #dPath,dFile:READ` (Opens "procData")
+    * `PROCEDURE udefVars`: `GET #dPath,hasRecords`
+    * `PROCEDURE udefVars`: `GET #dPath,varRec`
+    * `PROCEDURE udefVars`: `CLOSE #dPath`
+    * `PROCEDURE udefVars`: `OPEN #vPath,vFile:UPDATE` (Opens "varDefs")
+    * `PROCEDURE udefVars`: `GET #vPath,varCount`
+    * `PROCEDURE udefVars`: `SEEK #path,[offset]` (Used with `descOff`, `symTabOff`, etc.)
+    * `PROCEDURE udefVars`: `SEEK #vPath,[offset]` (Used for record-based access)
+    * `PROCEDURE udefVars`: `GET #vPath,varFRec` (Reads records from "varDefs")
+    * `PROCEDURE udefVars`: `GET #path,[variable]` (Reads data from main module file)
+    * `PROCEDURE udefVars`: `PUT #vPath,varFRec` (Writes updated records to "varDefs")
+    * `PROCEDURE udefVars`: `OPEN #dPath,dFile:UPDATE` (Re-opens "procData")
+    * `PROCEDURE udefVars`: `PUT #dPath,hasRecords`
+    * `PROCEDURE udefVars`: `PUT #dPath,varRec` (Saves sorted array)
+    * `PROCEDURE udefVars`: `CLOSE #vPath` (In error handler)
+    * `PROCEDURE udefVars`: `PRINT #2,[message]` (Prints status to Standard Error/Status)
+    * `PROCEDURE vSort`: `SEEK #vPath,[offset]` (Used to find records for swapping)
+    * `PROCEDURE vSort`: `GET #vPath,varFRec` (Reads records for swapping)
+    * `PROCEDURE vSort`: `PUT #vPath,varFRec` (Writes records for swapping)
+    * `PROCEDURE fSort`: `SEEK #vPath,[offset]` (Used to find records for swapping)
+    * `PROCEDURE fSort`: `GET #vPath,varFRec` (Reads records for swapping)
+    * `PROCEDURE fSort`: `PUT #vPath,varFRecs` (Writes records for swapping)
+* **System/Shell I/O:**
+    * None.
+* **Memory/Hardware I/O:**
+    * None.
 
-  (* 4. Load lookup data *)
-  OPEN #dPath,dFile:READ
-  GET #dPath,lookupFlag
-  GET #dPath,lookupArray
-  CLOSE #dPath
+---
 
-  (* 5. Open main data file and main subject file *)
-  OPEN #vPath,vFile:UPDATE
-  GET #vPath,dataCount
-  SEEK #path,dataOffset (* 'path' is subject file *)
+### 4\. Logic Walk-Through
 
-  (* 6. Main processing loop *)
-  PRINT #2,"Starting Process..."
-  GOSUB 200 (* Display Headers *)
-  recNum:=0
-  SEEK #vPath, ... (* Skip header *)
-  REPEAT
-    (* 6a. Initialize loop state *)
-    isTypeA:=FALSE \isTypeB:=FALSE \...
-    
-    (* 6b. Read data record *)
-    GET #vPath,dataRec
-    
-    (* 6c. Get lookup info *)
-    token:=lookupArray(recNum).token
-    pointer:=lookupArray(recNum).pointer
-    
-    (* 6d. Categorize and process *)
-    IF dataRec.type = 1 THEN (* Category 1 *)
-      RESTORE 430 (* Data for Cat 1 *)
-      GOSUB 410 (* Get Name *)
-      (* ... process simple data ... *)
-      dataRec.dmSize := ...
-    ENDIF
+A step-by-step explanation of each procedure's execution flow.
 
-    IF dataRec.type = 2 THEN (* Category 2 *)
-      RESTORE 430 (* Data for Cat 2 *)
-      GOSUB 410 (* Get Name *)
-      (* ... follow pointer to secondary table ... *)
-      SEEK #path, pointer
-      GET #path, dmAddr, dmSize
-      (* ... store results ... *)
-      dataRec.dmSiz := dmSize
-    ENDIF
-    
-    IF dataRec.type = 3 THEN (* Category 3 *)
-      (* ... follow pointer to primary table ... *)
-      SEEK #path, symTabOff + pointer
-      GET #path, vToken, vPointer
-      RESTORE 420 (* Data for Cat 3 *)
-      GOSUB 410 (* Get Name *)
+* **`PROCEDURE udefVars`**
+    * **Purpose:** The main procedure to identify, parse, sort, and rename all variable definitions from a compiled module's data sections.
+    * **Parameters (`PARAM`):** Receives file paths, offsets (`descOff`, `symTabOff`), and flags (`verbose`) from a calling procedure.
+    * **Main Logic:**
+        1.  **Initialization:** Sets `BASE 0` and an error trap (`ON ERROR GOTO 500`).
+        2.  **Load Data:** `OPEN`s `dFile` ("procData") and `GET`s the `hasRecords` flag and the `varRec` array (a variable lookup table).
+        3.  **Open Var File:** `OPEN`s `vFile` ("varDefs") for `UPDATE` and `GET`s the `varCount`.
+        4.  **Parse Variables (Main Loop):**
+            * It enters a `REPEAT...UNTIL` loop that runs `varCount` times.
+            * Inside the loop, it `GET`s a `varFRec` (Variable File Record) from `vFile`.
+            * It analyzes `varFRec.vp3.mTyp` (memory type) to determine if the variable is a simple atomic (`mTyp=1`), a string (`mTyp=2`), or a VDT-referenced complex type (`mTyp=3`).
+            * Based on the type, it `SEEK`s into the main module file (using `path` and `descOff`) to `GET` additional details (like offsets, sizes, and array dimensions).
+            * It uses `GOSUB 410` to look up a base name (e.g., "I", "S", "CA()") from `DATA` statements.
+            * It populates the `varFRec` with all discovered metadata.
+            * It `PUT`s the completed `varFRec` back into `vFile`.
+        5.  **Sort Data:**
+            * Calls `RUN vSort` to quicksort the `varRec` array in memory and simultaneously reorganize the `vFile` on disk, ordering them by `dmOff` (Data Memory Offset).
+            * It then counts all field records (`fRecs`).
+            * If fields exist, it calls `RUN fSort` to bubble sort the field records (both in `varRec` and `vFile`) based on `vOff`.
+        6.  **Save Sorted Array:** `OPEN`s `dFile` for `UPDATE` and `PUT`s the now-sorted `varRec` array back into it.
+        7.  **Rename Variables:**
+            * Loops through `vFile` again.
+            * If `varRec(recNum).nVar` is `TRUE`, it generates a new sequential name (e.g., "I001", "c001") for the variable.
+            * It `PUT`s the record, now with its new name, back into `vFile`.
+        8.  **Display & Validate:**
+            * If `verbose=TRUE`, displays the final sorted records using `GOSUB 200` and `GOSUB 250`.
+            * `SEEK`s to `symTabOff` in the main module file.
+            * It reads the VDT (Variable Definition Table) entry by entry and compares it against the `vFile` records to ensure every VDT entry is accounted for ("Validated").
+        9.  **Cleanup:** `END`s the procedure.
+    * **Subroutines (GOSUB):**
+        * `Line 200:` Prints headers for the verbose variable display.
+        * `Line 250:` Prints a single, heavily formatted line of variable metadata.
+        * `Line 267:` Prints a counter (used during verbose validation).
+        * `Line 410:` `READ`s from `DATA` blocks `420` or `430` to match a token code to a string.
+    * **Error Handling:**
+        * `Line 500:` On error, captures the `ERR` code, `CLOSE`s any open files (`vPath`, `dPath`), and `END`s.
 
-      (* 6e. Deep processing of category 3 *)
-      IF vToken = $A0 THEN (* Sub-type A *)
-        ...
-      ELSE (* Sub-type B, C, D *)
-        IF vToken >= $40 AND vToken <= $43 THEN
-           ...
-        ENDIF
-        IF vToken >= $48 AND vToken <= $4D THEN (* Array *)
-           SEEK #path, ...
-           GET #path, element1
-           ...
-        ENDIF
-      ENDIF
-    ENDIF
-    
-    (* 6f. Display status and write back *)
-    GOSUB 250 (* Display Record *)
-    SEEK #vPath, recNum*SIZE(dataRec)+...
-    PUT #vPath,dataRec
-    recNum:=recNum+1
-  UNTIL recNum=dataCount
-  PRINT #2,"Done"
+* **`PROCEDURE vSort`**
+    * **Purpose:** To perform an in-place quicksort on both the in-memory `varRecs` array and the on-disk `vFile`.
+    * **Parameters (`PARAM`):** The `varRecs` array (by reference), file path `vPath`, and sort bounds `bottom`/`top`.
+    * **Main Logic:**
+        1.  Implements a standard quicksort algorithm using `lower` and `upper` pointers.
+        2.  The sort key is `varRecs(index).dmOff`.
+        3.  When a swap is required (e.g., at `lower` and `upper`), it swaps the elements in the `varRecs` array *and* swaps the corresponding full records on disk in `vFile` using `SEEK`/`GET`/`PUT`.
+        4.  Recursively `RUN`s itself for the remaining partitions.
+    * **Error Handling:**
+        * `Line 10:` `ON ERROR GOTO 10` sets a local trap. On error, it stores `ERR` in the `er` parameter and `END`s.
 
-  (* 7. Sort data *)
-  PRINT #2,"Sorting..."
-  RUN vSort(er,which,vPath,0,dataCount-1,lookupArray)
-  IF er>0 THEN 500
-  (* ... optional second sort ... *)
-  RUN fSort(...)
-  PRINT #2,"Done"
-  
-  (* 8. Update lookup file *)
-  OPEN #dPath,dFile:UPDATE
-  PUT #dPath,lookupFlag
-  PUT #dPath,lookupArray
-  CLOSE #dPath
-  
-  (* 9. Post-process (e.g., Renaming) *)
-  PRINT #2,"Post-processing..."
-  recNum:=0
-  REPEAT
-    SEEK #vPath, ...
-    GET #vPath,dataRec
-    IF lookupArray(recNum).needsName THEN
-      (* ... generate name logic ... *)
-      dataRec.name := ...
-      PUT #vPath,dataRec
-    ENDIF
-    recNum:=recNum+1
-  UNTIL recNum=dataCount
-  PRINT #2,"Done"
-  
-  (* 10. Final display and validation *)
-  GOSUB 200 (* Headers *)
-  FOR recNum:=0 TO dataCount-1
-    GET #vPath,dataRec
-    GOSUB 250 (* Display Record *)
-  NEXT recNum
-  
-  (* ... Validation logic ... *)
-  
-  (* 11. End *)
-  END
-
-  (* === SUBROUTINES === *)
-200 (* Display Headers *)
-  IF verbose THEN
-    PRINT #2, "Header..."
-  ENDIF
-  RETURN
-
-250 (* Display Record *)
-  IF verbose THEN
-    PRINT #2 USING "...", dataRec.field
-  ELSE
-    PRINT #2, ".";
-  ENDIF
-  RETURN
-
-410 (* Name Lookup *)
-  REPEAT
-    READ byteVal,nameStr
-  UNTIL byteVal=token OR byteVal=$A0
-  RETURN
-
-420 (* VDT Name Data *)
-  DATA $40,"name1",$41,"name2",...
-  
-430 (* Atomic Name Data *)
-  DATA $00,"nameA",$80,"nameB",...
-
-500 (* Error Trap *)
-  IF er=0 THEN er:=ERR
-  IF vOpen THEN CLOSE #vPath
-  IF dOpen THEN CLOSE #dPath
-  END
-END
-```
-
-#### B. PWS Template: `vSort` (Quicksort with Disk Sync)
-
-```
-(* ==================================== *)
-(* TEMPLATE: Quicksort (In-Memory Array + Disk File)
-(* ==================================== *)
-
-PROCEDURE vSort
-  (* 1. Define types and parameters *)
-  TYPE VREC=...
-  TYPE VFRC=...
-  DIM varRec:VREC
-  DIM varFRec,varFRecs(2):VFRC
-  PARAM er:INTEGER; vPath:BYTE; bottom,top:INTEGER; varRecs(...):VREC
-  DIM lower,upper:INTEGER
-
-  (* 2. Set environment *)
-  ON ERROR GOTO 10 (* Error Trap *)
-  BASE 0
-
-  (* 3. Partitioning loop *)
-  lower:=bottom
-  upper:=top
-  LOOP
-    (* 3a. Find lower element to swap *)
-    REPEAT
-      btemp := varRecs(lower).sortKey < varRecs(top).sortKey
-      lower:=lower+1
-    UNTIL NOT(btemp)
-    lower:=lower-1
-    EXITIF lower=upper THEN ENDEXIT
-
-    (* 3b. Find upper element to swap *)
-    REPEAT
-      upper:=upper-1
-    UNTIL varRecs(upper).sortKey <= varRecs(top).sortKey OR upper=lower
-    EXITIF lower=upper THEN ENDEXIT
-
-    (* 3c. Perform synchronized swap *)
-    (* Read records from disk *)
-    SEEK #vPath,lower*SIZE(varFRec)+...
-    GET #vPath,varFRec
-    varFRecs(0):=varFRec
-    SEEK #vPath,upper*SIZE(varFRec)+...
-    GET #vPath,varFRec
-    varFRecs(1):=varFRec
-    (* Swap in-memory array *)
-    varRec:=varRecs(lower)
-    varRecs(lower):=varRecs(upper)
-    varRecs(upper):=varRec
-    (* Swap buffer *)
-    varFRec:=varFRecs(0)
-    varFRecs(0):=varFRecs(1)
-    varFRecs(1):=varFRec
-    (* Write records to disk *)
-    SEEK #vPath,lower*SIZE(varFRec)+...
-    varFRec:=varFRecs(0)
-    PUT #vPath,varFRec
-    SEEK #vPath,upper*SIZE(varFRec)+...
-    varFRec:=varFRecs(1)
-    PUT #vPath,varFRec
-
-    lower:=lower+1
-    EXITIF lower=upper THEN ENDEXIT
-  ENDLOOP
-
-  (* 4. Swap pivot element *)
-  IF lower<>top THEN
-    IF varRecs(lower).sortKey<>varRecs(top).sortKey THEN
-      (* ... perform synchronized swap (lower, top) ... *)
-    ENDIF
-  ENDIF
-
-  (* 5. Recursive calls *)
-  IF bottom<lower-1 THEN
-    RUN vSort(er,vPath,bottom,lower-1,varRecs)
-  ENDIF
-  IF lower+1<top THEN
-    RUN vSort(er,vPath,lower+1,top,varRecs)
-  ENDIF
-
-  END
-
-10 (* Error Trap *)
-  er:=ERR
-  END
-END
-```
-
-#### C. PWS Template: `fSort` (Bubble Sort with Disk Sync)
-
-```
-(* ==================================== *)
-(* TEMPLATE: Bubble Sort (In-Memory Array + Disk File)
-(* ==================================== *)
-
-PROCEDURE fSort
-  (* 1. Define types and parameters *)
-  TYPE VREC=...
-  TYPE VFRC=...
-  DIM varRec:VREC
-  DIM varFRec,varFRecs(2):VFRC (* 3-element buffer for swap *)
-  PARAM vPath:BYTE; recCount,varCount:INTEGER; varRecs(...):VREC
-  DIM sortedInt:INTEGER
-
-  (* 2. Set environment *)
-  BASE 0
-
-  (* 3. Sorting loop *)
-  sortedInt:=0
-  REPEAT
-    (* 3a. Check element type (optional filter) *)
-    SEEK #vPath,recCount*SIZE(varFRec)+...
-    GET #vPath,varFRec (* Read 1 record just to check token *)
-    IF varFRec.vp1.vdTkn > $3F AND varFRec.vp1.vdTkn < $60 THEN
-      
-      (* 3b. Compare adjacent elements *)
-      IF varRecs(recCount).sortKey > varRecs(recCount+1).sortKey THEN
-        (* 3c. Perform synchronized swap *)
-        (* Swap in-memory array *)
-        varRec:=varRecs(recCount)
-        varRecs(recCount):=varRecs(recCount+1)
-        varRecs(recCount+1):=varRec
-        (* Read 3 records from disk (n, n+1, n+2) *)
-        SEEK #vPath,recCount*SIZE(varFRec)+...
-        GET #vPath,varFRecs (* Reads into varFRecs(0,1,2) *)
-        (* Swap buffer (n, n+1) *)
-        varFRec:=varFRecs(0)
-        varFRecs(0):=varFRecs(1)
-        varFRecs(1):=varFRec
-        (* Write 3 records back to disk *)
-        SEEK #vPath,recCount*SIZE(varFRec)+...
-        PUT #vPath,varFRecs
-        
-        (* 3d. Bubble: move index back *)
-        recCount:=ABS(recCount-1)
-      ELSE
-        (* 3e. Advance: move to next unsorted pair *)
-        recCount:=sortedInt
-        sortedInt:=sortedInt+1
-      ENDIF
-    ENDIF
-  UNTIL recCount=varCount-1
-  END
-END
-```
+* **`PROCEDURE fSort`**
+    * **Purpose:** To perform an in-place bubble sort on the *field* records.
+    * **Parameters (`PARAM`):** The `varRecs` array (by reference), file path `vPath`, and counters.
+    * **Main Logic:**
+        1.  Implements a bubble sort.
+        * The sort key is `varRecs(recCount).vOff`.
+        * When a swap is required, it swaps the elements in the `varRecs` array *and* swaps the corresponding records on disk in `vFile` using `SEEK`/`GET`/`PUT`.
+    * **Error Handling:**
+        * None. Relies on the `ON ERROR GOTO 500` trap set in the calling procedure (`udefVars`).

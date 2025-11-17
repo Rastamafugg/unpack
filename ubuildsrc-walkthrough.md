@@ -1,203 +1,168 @@
-Analysis complete.
+**Code Maintenance Report**
 
-### 1\. Procedure Identification
+### 1\. Procedure & Data Analysis
 
-The input code contains two primary `PROCEDURE` blocks and five local `GOSUB/RETURN` subroutines.
+Analysis of all procedures, their local data, and shared data structures.
 
-**Main Procedures:**
+**User-Defined Data (`TYPE`)**
 
-  * `PROCEDURE ubuildSrc`: The main program logic.
-  * `PROCEDURE dsSort`: A standalone Quicksort algorithm used by `ubuildSrc`.
+  * `TYPE VREC`: Declared in `ubuildSrc`. A record for the variable array, storing type info, offsets, and a boolean flag.
+  * `TYPE VFP1`: Declared in `ubuildSrc`. Part 1 of a variable file record, storing pointers and size information (all `INTEGER`).
+  * `TYPE VFP2`: Declared in `ubuildSrc`. Part 2 of a variable file record, storing names, lengths, and reference counts.
+  * `TYPE VFP3`: Declared in `ubuildSrc`. Part 3 of a variable file record, storing type/link bytes and boolean flags.
+  * `TYPE VFRC`: Declared in `ubuildSrc`. A composite "Variable File Record" combining `VFP1`, `VFP2`, and `VFP3`.
+  * `TYPE DSMP`: Declared in `ubuildSrc` and `dsSort`. A "DSAT Map" record storing a `REAL` offset and three `INTEGER` size/dimension values. Note: This `TYPE` must be declared in any procedure that passes or receives it.
+  * `TYPE RECS`: Declared in `ubuildSrc`. A record for mapping `INTEGER` IDs to `STRING[7]` names.
 
-**GOSUB Subroutines (Local to `ubuildSrc`):**
+**Procedure Interface & Storage**
 
-  * **Label 200:** Array Naming Formatter.
-  * **Label 210:** Data Type Appender.
-  * **Label 268:** DSAT Counter Display.
-  * **Label 269:** Validation Progress Display.
-  * **Label 500:** Main Error Trap.
+  * **`PROCEDURE ubuildSrc`**
 
-**GOSUB Subroutines (Local to `dsSort`):**
+      * **Parameters (`PARAM`):**
+          * `path`, `oPath`: Input file path and output file path, type `BYTE`.
+          * `er`: Error code container, type `INTEGER`.
+          * `dataSiz`: Size of data, type `INTEGER`.
+          * `pOpen`, `verbose`: Boolean flags, type `BOOLEAN`.
+          * `descOff`, `symTabOff`: File offsets, type `REAL`.
+          * `dataDir`: Data directory path, type `STRING[16]`.
+          * `oFile`: Output file name, type `STRING[29]`.
+      * **Local Variables (`DIM`):**
+          * `varRec(400):VREC`: Array of 400 `VREC` structures.
+          * `varFRec`, `varFRec2`: Working variables of type `VFRC`.
+          * `DSMap(100):DSMP`: Array of 100 `DSMP` structures (DSAT Map).
+          * `rec(20):RECS`: Array of 20 `RECS` structures.
+          * `vPath`, `dPath`: File path numbers, type `BYTE`.
+          * `vOpen`, `dOpen`, `found`, `validated`, `endOfType`, `hasRecords`: Boolean flags.
+          * `version`: `STRING[8]`.
+          * `vFile`, `lnFile`, `ltFile`, `dFile`: File name strings, type `STRING[29]`.
+          * `tnTyp`, `byteVal`, `posVal`, `varCntr`: `BYTE` counters.
+          * `varRefs`, `varCount`, `recCnt`, `modSiz`, `lastOff`, `dataStOff`, `recNum`, `intVal`, `which`, `VDCount`, `dsatCnt`, `ucCnt`, `gapSize(20)`, `gapCnt`, `dsMCnt`, `typCnt`, `cntr`, `cntr2`, `tRec`, `tSiz`, `tVar`: Various `INTEGER` counters and storage.
+          * `mSize`, `dsPointer`, `nextOff`, `gapOff(20)`: `REAL` values for offsets and sizes.
+          * `tStrLen`, `typName`: `STRING[7]`.
+          * `tName`: `STRING[29]`.
+          * `source`: `STRING[512]`.
 
-  * **Label 10:** `dsSort` Error Trap.
+  * **`PROCEDURE dsSort`**
 
-### 2\. Logic Walk-Through
-
-#### `PROCEDURE ubuildSrc` (Main Logic)
-
-This procedure reads several data files (`initDB`, `procData`, `varDefs`) to reconstruct the `TYPE`, `DIM`, and `PARAM` declarative statements of a Basic09 program.
-
-1.  **Declarations:** Declares complex `TYPE` structures (VREC, VFRC, DSMP, RECS) and `DIM`s arrays and variables for file paths, flags, counters, and file records. It accepts `PARAM`s from a calling procedure, including file paths, memory offsets, and flags.
-2.  **Initialization:** Sets `BASE 0` for array indexing. It initializes error flags and file status booleans. It sets a main error trap using `ON ERROR GOTO 500`.
-3.  **Load Initial Data:**
-      * Opens `initDB` file, reads `version` and `DSMap` (DSAT Map) array, skipping over a file record structure using `SEEK` and `SIZE`. Closes the file.
-      * Opens `procData` file, reads `hasRecords` flag and the `varRec` (Variable Array Record) lookup table. Closes the file.
-4.  **DSAT Processing:**
-      * Opens the `varDefs` file for `UPDATE`.
-      * Reads `varCount` from the file.
-      * It checks if a Description Area exists (`symTabOff-descOff>3`).
-      * **Build DSAT Map:** It loops (`FOR...NEXT`) through the `varDefs` file, reads each `varFRec`, and populates the `DSMap` array with offset and size information for variables that have a Description Area (`dsSiz>0`). It filters out duplicate entries.
-      * **Sort DSAT Map:** Calls `RUN dsSort` to recursively sort the `DSMap` array based on the `dsOf` (offset) field.
-      * **Validate DSAT:** It `SEEK`s to the `descOff` in the main program file (`#path`). It iterates through the sorted `DSMap` and compares the expected offsets (`dsOf`) with the current file pointer (`dsPointer`).
-          * If `dsOf > dsPointer`, it registers this as a "gap" of unidentified data, reads the bytes, and reports it.
-          * It reads the expected data block (`dsSz`) and continues.
-          * This process validates that the `DSMap` correctly describes the data layout.
-      * **Fix Type Records:** It performs a pass over the `varDefs` file to link complex `TYPE` fields. It finds a parent record (`pVar`) and then scans forwards and backwards, using `SEEK`, `GET`, and `PUT`, to update related fields (`vRecNum`). This ensures all fields of a record type share the same ID.
-5.  **Validate Data Memory:**
-      * Performs a `REPEAT/UNTIL` loop reading `varDefs` to ensure there are no gaps between variables in the Data Memory block. It compares `varRec(cntr).dmOff+varFRec.vp1.dmSiz` with `varRec(cntr+1).dmOff`.
-      * Calls `GOSUB 269` to print progress dots.
-6.  **Source Code Generation:**
-      * Initializes a `rec` array to track `TYPE` definitions and resets loop counters.
-      * Enters a main `REPEAT/UNTIL` loop to read `varDefs` one record at a time.
-      * **`nTyp` Switch:** It checks `varRec(recNum).nTyp` to determine what kind of statement to build.
-      * **`nTyp=0` (TYPE):**
-          * Builds `TYPE` statements.
-          * Calls `GOSUB 200` to format array dimensions.
-          * Groups variables of the same type (e.g., `a,b:INTEGER`).
-          * When the type changes (e.g., to `REAL`), it calls `GOSUB 210` to append the type string (e.g., `:INTEGER`).
-          * When a `TYPE` block is complete (`pVar` changes), it prints the `source` string to the output file (`#oPath`) and resets `source`.
-      * **`nTyp=1` (DIM):**
-          * Same logic, but builds `DIM` statements.
-      * **`nTyp=2` (PARAM):**
-          * Same logic, but builds `PARAM` statements.
-      * The loop continues until `recNum=varCount`.
-7.  **Shutdown:**
-      * Closes the `varDefs` file.
-      * `! CHAIN chainMod`: This line is a comment, as `!` is a synonym for `REM`. The `CHAIN` command is not executed.
-      * The procedure finishes with `END`.
+      * **Parameters (`PARAM`):**
+          * `er`, `which`: Error code and recursion counter, type `INTEGER`.
+          * `bottom`, `top`: Array bounds for sorting, type `INTEGER`.
+          * `DSMaps(100):DSMP`: The `DSMP` array passed by reference to be sorted.
+      * **Local Variables (`DIM`):**
+          * `DSMap:DSMP`: A temporary `DSMP` structure used for swapping elements.
+          * `lower`, `upper`: Loop counters, type `INTEGER`.
+          * `btemp`: Boolean flag, type `BOOLEAN`.
 
 -----
 
-#### `GOSUB 200` (Array Naming Formatter)
+### 2\. Call Graph (RUN & GOSUB)
 
-  * **Purpose:** To replace array placeholders with formatted dimension strings.
-  * **Logic:**
-    1.  Checks if the `vName` string ends in `(,,)`, `(,)`, or `()`.
-    2.  If a match is found, it strips the placeholder and appends the `vArray` string (which contains the actual dimensions, e.g., `(20,10)`).
-    3.  `RETURN`.
+A map of inter-procedure (`RUN`) and intra-procedure (`GOSUB`) dependencies.
 
------
-
-#### `GOSUB 210` (Type Naming Appender)
-
-  * **Purpose:** To append the correct data type suffix to a `DIM`, `PARAM`, or `TYPE` statement.
-  * **Logic:**
-    1.  Inspects the prefix character of the `tName` variable (e.g., 'B' for `BYTE`, 'S' for `STRING`).
-    2.  Appends the corresponding type string (e.g., `:BYTE`, `:INTEGER`) to the global `source` string.
-    3.  If `STRING`, it also appends the length (e.g., `[80]`) if it is not the default `[32]`.
-    4.  If a complex type (`'C'`):
-          * It searches the `rec` array for a matching `recID`.
-          * If found, it appends the known `recName` (e.g., `:TYP1`).
-          * If *not* found (an unclassified type), it generates a *new* `TYPE` definition on the fly (e.g., `TYPE TYP2=uC1(100):BYTE`), prints this new `TYPE` statement to the output file immediately, and appends the new `typName` to the `source` string.
-    5.  `RETURN`.
+  * **`PROCEDURE ubuildSrc`**
+      * `RUN dsSort(er,which,0,dsMCnt-1,DSMap)`: Sorts the local `DSMap` array based on file offsets.
+      * `GOSUB 268`: Displays the `dsatCnt` counter value.
+      * `GOSUB 200`: Formats array variable names in the `source` string (e.g., converts `name()` to `name(elem1)`).
+      * `GOSUB 210`: Appends the correct data type (e.g., `:BYTE`, `:STRING[n]`) to the `source` string.
+      * `GOSUB 269`: Prints a progress indicator (`.` or full count).
+  * **`PROCEDURE dsSort`**
+      * `RUN dsSort(er,which,bottom,lower-1,DSMaps)`: Recursive call to sort the lower partition of the array.
+      * `RUN dsSort(er,which,lower+1,top,DSMaps)`: Recursive call to sort the upper partition of the array.
+      * No `GOSUB` calls.
 
 -----
 
-#### `GOSUB 268` & `GOSUB 269` (Progress Display)
+### 3\. External Interaction Points
 
-  * **Purpose:** To print status information.
-  * **Logic (268):** Prints the `dsatCnt` counter using `PRINT USING`.
-  * **Logic (269):** Prints the `cntr` if `verbose` is true, otherwise prints a `.` as a progress indicator.
-  * `RETURN`.
+All statements that interact with the operating system, files, or hardware.
+
+  * **File I/O:**
+      * `PROCEDURE ubuildSrc`: `OPEN #dPath,dFile:READ` (Opens `initDB` and `procData` files)
+      * `PROCEDURE ubuildSrc`: `OPEN #vPath,vFile:UPDATE` (Opens `varDefs` file for reading and writing)
+      * `PROCEDURE ubuildSrc`: `PRINT #2,...` (Prints status messages to standard error/status path)
+      * `PROCEDURE ubuildSrc`: `PRINT #oPath,source` (Writes generated source code to the output file path `oPath`)
+      * `PROCEDURE ubuildSrc`: `GET #dPath,version`
+      * `PROCEDURE ubuildSrc`: `GET #dPath,DSMap`
+      * `PROCEDURE ubuildSrc`: `GET #dPath,hasRecords`
+      * `PROCEDURE ubuildSrc`: `GET #dPath,varRec`
+      * `PROCEDURE ubuildSrc`: `GET #vPath,varCount`
+      * `PROCEDURE ubuildSrc`: `GET #vPath,varFRec`
+      * `PROCEDURE ubuildSrc`: `GET #vPath,varFRec2`
+      * `PROCEDURE ubuildSrc`: `GET #path,byteVal`
+      * `PROCEDURE ubuildSrc`: `GET #path,intVal`
+      * `PROCEDURE ubuildSrc`: `PUT #vPath,varFRec` (Updates `varFRec` in the `varDefs` file)
+      * `PROCEDURE ubuildSrc`: `SEEK #dPath,...` (Positions file pointer in `dPath`)
+      * `PROCEDURE ubuildSrc`: `SEEK #vPath,...` (Positions file pointer in `vPath`)
+      * `PROCEDURE ubuildSrc`: `SEEK #path,...` (Positions file pointer in input `path`)
+      * `PROCEDURE ubuildSrc`: `CLOSE #dPath`
+      * `PROCEDURE ubuildSrc`: `CLOSE #vPath`
+      * `PROCEDURE dsSort`: `PRINT #2,".";` (Prints progress dots to standard error/status path)
+  * **System/Shell I/O:**
+      * `PROCEDURE ubuildSrc`: `! chainMod:=...` (This is a commented-out line, `!` = `REM`)
+      * `PROCEDURE ubuildSrc`: `! CHAIN chainMod` (This is a commented-out line, `!` = `REM`)
+  * **Memory/Hardware I/O:**
+      * None found.
 
 -----
 
-#### `GOSUB 500` (Main Error Trap)
+### 4\. Logic Walk-Through
 
-  * **Purpose:** To handle runtime errors and shut down cleanly.
-  * **Logic:**
-    1.  Activated by `ON ERROR GOTO 500`.
-    2.  Captures the error code using the `ERR` function.
-    3.  Closes any open files (`#vPath`, `#dPath`) to prevent data corruption.
-    4.  `END` statement terminates all execution.
+A step-by-step explanation of each procedure's execution flow.
 
------
+  * **`PROCEDURE ubuildSrc`**
 
-#### `PROCEDURE dsSort` (Quicksort)
+      * **Purpose:** To read multiple binary data definition files, validate their internal structures (DSAT map, data memory), and reconstruct the original Basic09 `TYPE`, `DIM`, and `PARAM` source code statements, writing them to an output file.
+      * **Parameters (`PARAM`):** Receives file paths (`path`, `oPath`), error status (`er`), size/offset data (`dataSiz`, `descOff`, `symTabOff`), flags (`pOpen`, `verbose`), and directory/file names (`dataDir`, `oFile`).
+      * **Main Logic:**
+        1.  Initializes `BASE 0`, sets the error handler `ON ERROR GOTO 500`, and initializes file status flags.
+        2.  Opens `initDB` file. `GET`s `version`, `SEEK`s past a header, and `GET`s the `DSMap` array. `CLOSE`s file.
+        3.  Sets string variables for file names (`vFile`, `lnFile`, `dFile`).
+        4.  Opens `procData` file. `GET`s `hasRecords` flag and the `varRec` lookup table. `CLOSE`s file.
+        5.  Opens `varDefs` file (`vFile`) for `UPDATE` and `GET`s the `varCount`.
+        6.  **DSAT Validation:** If the description area has content (`symTabOff-descOff>3`):
+              * Loops from 0 to `varCount-1`, `GET`ting each `varFRec` from `vFile`.
+              * Populates the local `DSMap` array with data from `varFRec`, skipping duplicates.
+              * Calls `RUN dsSort` to sort the `DSMap` array by offset.
+              * **Validation Loop:** `SEEK`s to `descOff` in the main input file (`#path`). It then walks through the file byte by byte, comparing its position (`dsPointer`) to the sorted `DSMap` offsets. It `GET`s data to advance the pointer, reporting any gaps (unidentified data) between `DSMap` entries.
+              * **Record ID Fixing:** Loops through `vFile` again. For variables that are fields of a record (`pVar>0`), it finds the parent record and `PUT`s an updated `vRecNum` to ensure all fields of the same record share a common ID.
+        7.  **Data Memory Validation:** Loops through `vFile` and `varRec` data, `GET`ting records and checking if the `dmOff` (data memory offset) plus `dmSiz` (size) matches the `dmOff` of the *next* variable. This validates that the data memory allocation is contiguous.
+        8.  **Source Code Generation:**
+              * Initializes the `rec` array and counters.
+              * Enters a `REPEAT...UNTIL recNum=varCount` loop to read `vFile` one last time.
+              * `SEEK`s and `GET`s the `varFRec` for the current `recNum`.
+              * **If `varRec(recNum).nTyp=0`:** Builds a `TYPE` statement string. It groups variables of the same type (e.g., `a,b:INTEGER`).
+              * **If `varRec(recNum).nTyp=1`:** Builds a `DIM` statement string.
+              * **If `varRec(recNum).nTyp=2`:** Builds a `PARAM` statement string.
+              * `GOSUB 200` is used to format array names (e.g., `C001()`) into `C001(10)`.
+              * `GOSUB 210` is used to append the correct type string (e.g., `:BYTE`, `:STRING[n]`) based on the variable's name prefix.
+              * Completed statements are written to the output file using `PRINT #oPath,source`.
+        9.  `CLOSE`s `vFile`.
+        10. `END`s the procedure.
+      * **Subroutines (GOSUB):**
+          * `Line 200:` Fixes array variable name suffixes in `varFRec.vp2.vName` using `LEFT$` and `varFRec.vp2.vArray`.
+          * `Line 210:` Appends the type declaration (e.g., `:BYTE`, `:REAL`) to the `source` string. It determines the type by checking prefixes in `tName` (e.g., `Bb`, `Ii`, `Ss`) and appends string lengths or user-defined type names.
+          * `Line 268:` Prints the `dsatCnt` counter value.
+          * `Line 269:` Prints a progress indicator (`.` or the full `cntr` value) based on the `verbose` flag.
+      * **Error Handling:**
+          * `Line 500:` Captures the `ERR` code. `CLOSE`s both `vPath` and `dPath` if they are open (`vOpen`, `dOpen`). `END`s the procedure, returning the error code in the `er` parameter.
 
-  * **Purpose:** A recursive Quicksort algorithm to sort the `DSMap` array.
-  * **Logic:**
-    1.  Receives parameters: `er`, `which`, `bottom`, `top`, and the array `DSMaps`.
-    2.  Sets a local error trap `ON ERROR GOTO 10` and `BASE 0`.
-    3.  Implements a standard Quicksort algorithm using the `top` element as the pivot.
-    4.  Uses a main `LOOP/ENDLOOP`.
-    5.  Uses two `REPEAT/UNTIL` loops to find the partition points (`lower` and `upper`) based on the `dsOf` field.
-    6.  Swaps elements using a temporary `DSMap` variable. This is a full structure assignment.
-    7.  Uses `EXITIF` to break the loop when partitions meet.
-    8.  Recursively calls `RUN dsSort` for the lower and upper partitions.
-    9.  The error trap at label `10` passes the `ERR` code back to the `er` parameter, which was passed by reference.
+  * **`PROCEDURE dsSort`**
 
-### 3\. Process and Workflow Synthesis (PWS) Templates
-
-#### PWS Template: `ubuildSrc`
-
-  * **Identifier:** `PROCEDURE ubuildSrc`
-  * **Summary:** Reconstructs Basic09 declarative source code (`TYPE`, `DIM`, `PARAM`) by reading, parsing, and validating binary definition files (`initDB`, `procData`, `varDefs`).
-  * **Inputs (Parameters):**
-      * `path`, `oPath`: `BYTE` (File paths)
-      * `er`, `dataSiz`: `INTEGER` (Error flag, Data size)
-      * `pOpen`, `verbose`: `BOOLEAN` (Flags)
-      * `descOff`, `symTabOff`: `REAL` (File offsets)
-      * `dataDir`, `oFile`: `STRING` (File names/paths)
-  * **Outputs (State):**
-      * Generates a source code file at path `oFile` (via `#oPath`).
-      * Modifies the `varDefs` file (via `#vPath`).
-      * Prints status messages to Standard Error (path `#2`).
-      * Sets `er` parameter if an error occurs.
-  * **Process:**
-    1.  **Initialize:** Set `BASE 0`, set `ON ERROR GOTO 500`.
-    2.  **Load Data:** `OPEN`/`GET`/`CLOSE` `initDB` and `procData` to load `DSMap` and `varRec` arrays.
-    3.  **Process DSAT:**
-          * `OPEN` `varDefs`.
-          * Loop (`FOR`) through `varDefs`, read `varFRec`, and build `DSMap`.
-          * `RUN dsSort` to sort `DSMap`.
-          * `SEEK` to `descOff` in `#path`.
-          * Loop (`REPEAT/UNTIL`) to validate `DSMap` against file data, identifying gaps.
-          * Loop (`FOR`) through `varDefs` to link complex type records (`pVar`), updating `varDefs` file with `PUT`.
-    4.  **Validate Memory:** Loop (`REPEAT/UNTIL`) through `varRec` to check for gaps in `dmOff`.
-    5.  **Generate Source:**
-          * Initialize `rec` array and state variables.
-          * Loop (`REPEAT/UNTIL`) from `recNum=0` to `varCount-1`.
-          * `GET` `varFRec`.
-          * `IF varRec(recNum).nTyp = 0`: Build `TYPE` string.
-          * `IF varRec(recNum).nTyp = 1`: Build `DIM` string.
-          * `IF varRec(recNum).nTyp = 2`: Build `PARAM` string.
-          * Use `GOSUB 200` (Format Array) and `GOSUB 210` (Append Type).
-          * `PRINT` completed `source` string to `#oPath`.
-    6.  **Cleanup:** `CLOSE #vPath`.
-    7.  **Terminate:** `END`.
-  * **Dependencies:**
-      * `GOSUB 200` (Array Naming)
-      * `GOSUB 210` (Type Naming)
-      * `GOSUB 268`/`269` (Progress Display)
-      * `GOSUB 500` (Error Trap)
-      * `PROCEDURE dsSort`
-
-#### PWS Template: `dsSort`
-
-  * **Identifier:** `PROCEDURE dsSort`
-  * **Summary:** Implements a recursive Quicksort algorithm to sort an array of `DSMP` (DSAT Map) structures.
-  * **Inputs (Parameters):**
-      * `er`, `which`: `INTEGER` (Error flag, recursion depth)
-      * `bottom`, `top`: `INTEGER` (Array indices for partition)
-      * `DSMaps(100):DSMP` (Array of structures, passed by reference)
-  * **Outputs (State):**
-      * Sorts the `DSMaps` array (passed by reference) in place.
-      * Sets `er` parameter if an error occurs.
-      * Prints `.` to Standard Error (path `#2`) for progress.
-  * **Process:**
-    1.  **Initialize:** Set `ON ERROR GOTO 10`, `BASE 0`.
-    2.  **Partition:**
-          * Set `lower:=bottom`, `upper:=top`.
-          * Enter `LOOP/ENDLOOP`.
-          * `REPEAT/UNTIL`: Find `lower` partition point (where `dsOf >=` pivot).
-          * `REPEAT/UNTIL`: Find `upper` partition point (where `dsOf <=` pivot).
-          * `EXITIF lower=upper`.
-          * **Swap:** Swap `DSMaps(lower)` and `DSMaps(upper)` using a temporary `DSMap` variable.
-    3.  **Swap Pivot:** Swap final `lower` element with `top` (pivot).
-    4.  **Recurse:**
-          * `IF bottom < lower-1 THEN RUN dsSort(er,which,bottom,lower-1,DSMaps)`.
-          * `IF lower+1 < top THEN RUN dsSort(er,which,lower+1,top,DSMaps)`.
-    5.  **Terminate:** `END`.
-  * **Dependencies:**
-      * `GOSUB 10` (Error Trap)
+      * **Purpose:** To sort an array of `DSMP` structures (passed by reference) using the Quicksort algorithm. The sort key is the `dsOf` (offset) field.
+      * **Parameters (`PARAM`):**
+          * `er`: Error code container, passed by reference.
+          * `which`: Recursion depth counter, passed by reference.
+          * `bottom`, `top`: `INTEGER` bounds for the current sort partition.
+          * `DSMaps(100):DSMP`: The array to be sorted.
+      * **Main Logic:**
+        1.  Sets a local error handler `ON ERROR GOTO 10`.
+        2.  Increments `which` and `PRINT`s a `.` to path \#2 (standard error) as a progress indicator.
+        3.  Sets `BASE 0` for array indexing.
+        4.  Implements a standard Quicksort partitioning `LOOP`. It partitions the array based on the `dsOf` field of the pivot element (`DSMaps(top)`).
+        5.  Elements are swapped using the local `DSMap` variable.
+        6.  Calls `RUN dsSort` recursively for the lower partition (`bottom` to `lower-1`).
+        7.  Calls `RUN dsSort` recursively for the upper partition (`lower+1` to `top`).
+        8.  `END`s the procedure.
+      * **Subroutines (GOSUB):** None.
+      * **Error Handling:**
+          * `Line 10:` Captures the `ERR` code in the `er` parameter and `END`s the procedure.

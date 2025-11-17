@@ -1,226 +1,115 @@
-### 1\. Procedure Identification
+**Code Maintenance Report**
 
-**Main Logic:**
+### 1. Procedure & Data Analysis
 
-  * `PROCEDURE unpack`
+Analysis of all procedures, their local data, and shared data structures.
 
-**Internal Procedures (GOSUB/RETURN):**
+**User-Defined Data (`TYPE`)**
+* `TYPE HEAD`: Defines the complex data structure for a standard Basic09 module header.
+* `TYPE OHEAD`: Defines a partial data structure for an alternate (non-I-Code) module header.
+* `TYPE REG`: Defines a complex data structure to map 6809 register values for OS-9 system calls.
 
-  * **Label 30:** Turn Pause On
-  * **Label 40:** Turn Pause Off
-  * **Label 50:** Turn Cursor Off (via external `GFX2`)
-  * **Label 60:** Turn Cursor On (via external `GFX2`)
+**Procedure Interface & Storage**
+* **`PROCEDURE unpack`**
+    * **Parameters (`PARAM`):**
+        * `infile`: Input value, path of the file to decode, type `STRING[80]`.
+        * `option`: Input value, command-line options, type `STRING[2]`.
+    * **Local Variables (`DIM`):**
+        * `header`: Storage for the module header, type `HEAD`.
+        * `oheader`: Storage for the alternate module header, type `OHEAD`.
+        * `regs`: Storage for system call registers, type `REG`.
+        * `filepath`, `outpath`, `callcode`, `char`: Path numbers and temporary storage, type `BYTE`.
+        * `packet(32)`: 32-element array for system call data, type `BYTE`.
+        * `maxdata`, `er`, `modsiz` (INTEGER), `count`, `counter`, `tpVars`: Loop counters and status variables, type `INTEGER`.
+        * `filesize`, `modsize` (REAL), `execoff`, `dataoff`: File and module offsets, type `REAL`.
+        * `start`, `symtabOff`, `descOff`, `pointer`: File position pointers, type `REAL`.
+        * `nono`, `fileopen`, `outexists`, `verbose`, `outfile`, `ppause`, `skipped`: Program status flags, type `BOOLEAN`.
+        * `version`: Program version identifier, type `STRING[10]`.
+        * `part`: Stores name of external procedure to `RUN`, type `STRING[11]`.
+        * `dataDir`: Path to data directory, type `STRING[16]`.
+        * `filename`, `modname`, `outname`: File and module name storage, type `STRING[29]`.
+        * `format`: Format string for `PRINT USING`, type `STRING[50]`.
+        * `file`: Processed infile path, type `STRING[80]`.
+    * **Undeclared Variables:**
+        * `data1`: Used as a parameter in `RUN part(...)`. Per documentation, this variable defaults to type `REAL`.
 
-**Error Handlers (GOTO):**
+### 2. Call Graph (RUN & GOSUB)
 
-  * **Label 10:** Skip option parsing
-  * **Label 20:** Display Help Screen
-  * **Label 100:** Primary Error Trap
+A map of inter-procedure (`RUN`) and intra-procedure (`GOSUB`) dependencies.
 
------
+* **`PROCEDURE unpack`**
+    * `RUN SysCall(callcode, regs)`: (Called multiple times) Executes an external OS-9 machine language system call.
+    * `RUN part(...)`: (Called 4 times) Calls external Basic09 procedures stored in the `part` variable ("udecode", "udefVars", "ubuildSrc", "uinstruction").
+    * `RUN GFX2("CUROFF")`: (via `GOSUB 50`) Calls an external procedure to disable the cursor.
+    * `RUN GFX2("CURON")`: (via `GOSUB 60`) Calls an external procedure to enable the cursor.
+    * `GOSUB 30`: Jumps to internal subroutine to turn Page Pause ON.
+    * `GOSUB 40`: Jumps to internal subroutine to turn Page Pause OFF.
+    * `GOSUB 50`: Jumps to internal subroutine to turn Cursor OFF.
+    * `GOSUB 60`: Jumps to internal subroutine to turn Cursor ON.
 
-### 2\. Logic Walk-Through
+### 3. External Interaction Points
 
-A deconstruction of the main logic flow and internal procedures, validating syntax against the `Basic09-only-reference.md` and incorporating analysis from the `About unidentified gaps in the DSAT` document.
+All statements that interact with the operating system, files, or hardware.
 
-#### Main Logic (`PROCEDURE unpack`)
+* **File I/O:**
+    * `PROCEDURE unpack`: `OPEN #filepath,file:READ` (Opens the main input file).
+    * `PROCEDURE unpack`: `CREATE #outpath,outname:WRITE` (Creates the `.B09` source file).
+    * `PROCEDURE unpack`: `GET #filepath,header` (Reads the module header).
+    * `PROCEDURE unpack`: `GET #filepath,oheader` (Reads the alternate header).
+    * `PROCEDURE unpack`: `GET #filepath,oheader.oname` (Reads the alternate module name).
+    * `PROCEDURE unpack`: `SEEK #filepath,...` (Used multiple times to position the file pointer).
+    * `PROCEDURE unpack`: `PRINT #2,...` (Prints error and status messages to Standard Error).
+    * `PROCEDURE unpack`: `PRINT #outpath,...` (Writes source code to the output file).
+    * `PROCEDURE unpack`: `PRINT #outpath USING ...` (Writes formatted footer to the output file).
+    * `PROCEDURE unpack`: `CLOSE #filepath`
+    * `PROCEDURE unpack`: `CLOSE #outpath`
+* **System/Shell I/O:**
+    * `PROCEDURE unpack`: `KILL part` (Used 4 times to remove external procedures from memory).
+    * `PROCEDURE unpack`: `SHELL "UnLink ..."` (Used multiple times to unlink external modules).
+    * `PROCEDURE unpack`: `SHELL "Load uinstruction"` (Loads an external module into memory).
+* **Memory/Hardware I/O:**
+    * None. (No `PEEK` or `POKE` statements are used).
 
-1.  **Declarations (Lines 2-90):**
+### 4. Logic Walk-Through
 
-      * The code uses `TYPE` to define three complex data structures: `HEAD`, `OHEAD`, and `REG`. (Valid: "TYPE Statement")
-      * It uses `DIM` to declare numerous variables, specifying atomic types (`BYTE`, `INTEGER`, `REAL`, `BOOLEAN`) and `STRING` with explicit lengths. (Valid: "DIM Statement")
-      * It uses `PARAM` to define the procedure's input parameters, `infile` and `option`. (Valid: "PARAM Statement")
-      * All comments use the `(* ... *)` syntax. (Valid: "Comment Statements")
+A step-by-step explanation of each procedure's execution flow.
 
-2.  **Initialization (Lines 94-106):**
-
-      * Variables are assigned default values using `LET` (implied). (Valid: "Assignment Statements")
-      * Boolean flags (`nono`, `fileopen`, `verbose`, etc.) are set.
-
-3.  **Parameter Parsing (Lines 109-120):**
-
-      * An error trap is set: `ON ERROR GOTO 10`. (Valid: "ON ERROR GOTO Statement")
-      * The `option` string is checked using `SUBSTR` for "-V" or "-O" (and lowercase variants). (Valid: "SUBSTR" function, "IF Statement: Type 2")
-      * If found, `verbose` and `outfile` flags are updated.
-
-4.  **File Input Parsing (Label 10, Lines 123-134):**
-
-      * A new error trap is set: `ON ERROR GOTO 20`.
-      * The `infile` parameter is assigned to the `file` variable.
-      * The code attempts to parse a `filename` from the `file` pathlist using a `REPEAT...UNTIL` loop that searches backward for a "/" character, utilizing `LEN`, `MID$`, and `RIGHT$`. (Valid: "REPEAT/UNTIL Statement", "LEN", "MID$", "RIGHT$" functions)
-      * It checks if the `file` string starts with "-" or "?" using `SUBSTR` and, if so, branches to Label 20 using `IF...THEN <line #>`. (Valid: "IF Statement: Type 1")
-
-5.  **Setup & Pre-flight (Lines 137-160):**
-
-      * The main error trap is set: `ON ERROR GOTO 100`.
-      * The input `file` is opened using `OPEN #filepath,file:READ`. (Valid: "OPEN Statement")
-      * The code calls an external procedure `RUN SysCall` to get the OS-9 pause status. It passes parameters by reference (`regs`) and uses `ADDR` to get the variable address. (Valid: "RUN Statement", "ADDR" function)
-      * If pause is found to be on, it calls the internal procedure `GOSUB 40` (Turn Pause Off). (Valid: "GOSUB Statement")
-      * It calls `GOSUB 50` (Turn Cursor Off).
-      * It calls `RUN SysCall` again to get the `filesize`.
-
-6.  **Main Processing Loop (Lines 163-305):**
-
-      * A `WHILE NOT(EOF(#filepath)) DO ... ENDWHILE` loop iterates as long as the end of the input file is not reached. (Valid: "WHILE/DO Statement", "EOF" function)
-      * An `EXITIF start=filesize THEN ... ENDEXIT` check provides a clean exit. (Valid: "EXITIF and ENDEXIT Statements")
-      * Inside the loop:
-          * `SEEK #filepath,start` positions the file pointer. (Valid: "SEEK Statement")
-          * `GET #filepath,header` reads binary data directly into the `header` structure. (Valid: "GET Statement")
-          * Header fields (`ms`, `eo`, `pss`, `dso`) are extracted.
-          * **Module Validation:** It checks `header.sb` (sync bytes). If not `$87CD`, it prints an error to path \#2 (`PRINT #2,...`), calls `GOSUB 30` (Turn Pause On), and `END`s. (Valid: "PRINT Statement", "END Statement")
-          * **Name Extraction:** The module name is parsed using `LAND`, `ASC`, `MID$`, `LEFT$`, and `CHR$`. (Valid: "LAND", "ASC", "MID$", "LEFT$", "CHR$" functions)
-          * **Type Check:** The code checks `header.tl` and `header.hp` to identify I-Code.
-          * If it is not I-Code (`header.tl<>$22`), it reads the `oheader` structure, parses the name using a `REPEAT...UNTIL` loop, prints a "NOT I-CODE\!" message, sets `skipped:=TRUE`, and updates the `start` pointer to skip the module.
-          * **I-Code Processing:** If `NOT(skipped)`:
-              * **Offset Calculation:** It calculates the absolute offsets for the execution area (`execoff`), Symbol Table (`symtabOff`), and Description Area (`descOff`).
-              * **DSAT Identification:** The `descOff` variable points to the start of the **DSAT (Description area or Data Storage Allocation Table)**. As described in the "About unidentified gaps in the DSAT" document, this is not a simple table but a complex, packed data structure.
-              * **DSAT Structure:** This area contains "unidentified gaps" interleaved with "validated" data definitions. The "unidentified gaps" contain metadata for `TYPE` definitions (e.g., total size, field offsets), as defined by the `TYPE GAPS` structure in the DSAT analysis document. The "validated" sections represent data for `STRING`, `ARRAY`, or `RECORD` variables that are defined *before* the `TYPE`s that use them.
-              * It creates an output file: `CREATE #outpath,outname:WRITE`. (Valid: "CREATE statement")
-              * It `PRINT`s the `PROCEDURE` line to standard output (default path \#1) and the output file (path `#outpath`).
-              * **External Module Calls:** The `unpack` procedure delegates the complex parsing of the DSAT to external procedures.
-              * `(* Load part 1 *)`
-              * `part:="udecode"`
-              * `RUN part(...)`
-              * **Analysis:** This external procedure is responsible for the initial parsing of the DSAT located at `descOff`. It must read and interpret the complex, non-linear structure of "gaps" and "validated" sections to identify and reconstruct the `TYPE` definitions.
-              * `(* Load part 2 *)`
-              * `part:="udefVars"`
-              * `RUN part(...)`
-              * **Analysis:** This procedure continues processing the DSAT to define `DIM` variables based on the `TYPE` definitions resolved by `udecode`. It associates `DIM` declarations with their complex `TYPE`s, using the information parsed from the DSAT.
-              * `(* Load part 3 *)`
-              * `part:="ubuildSrc"`
-              * `RUN part(...)`
-              * **Analysis:** This procedure uses the parsed type and variable information (from `udecode` and `udefVars`) and data from the Symbol Table (`symtabOff`) to reconstruct the procedure's source code.
-              * **Commented Code:** Lines prefixed with `!` are comments, per the documentation ("The '\!' character can be typed in place of the keyword REM"). The entire "Load part 4" section (lines 262-269) is commented out.
-              * **Footer:** It dynamically builds a format string for `PRINT USING` using `STR$` and `LEN`. (Valid: "PRINT USING Statement", "STR$", "LEN")
-              * It closes the output file: `CLOSE #outpath`. (Valid: "CLOSE Statement")
-              * It updates the `start` pointer for the next loop iteration.
-
-7.  **Program Termination (Lines 307-329):**
-
-      * The `WHILE` loop ends.
-      * `CLOSE #filepath` is called.
-      * `GOSUB 60` (Turn Cursor On) is called.
-      * **Commented Code:** The `!IF er>0...` block (lines 314-329) is commented out.
-      * If `ppause` was `TRUE` at the start, `GOSUB 30` (Turn Pause On) is called to restore the state.
-      * `END` terminates the procedure.
-
-#### Help Screen (Label 20)
-
-  * This block `PRINT`s help text to path \#2 (Standard Error). (Valid: "PRINT Statement", "I/O PATHS")
-  * It ensures the file is closed (`CLOSE #filepath`) and terminates with `END`.
-
-#### Internal Procedure: Turn Pause On (Label 30)
-
-  * This is a `GOSUB` subroutine ending in `RETURN`. (Valid: "GOSUB/RETURN Statements")
-  * It modifies the `packet` array, sets `regs` values, and calls `RUN SysCall` to set the OS-9 pause state.
-
-#### Internal Procedure: Turn Pause Off (Label 40)
-
-  * Identical to Label 30, but sets `packet(8):=0` before calling `RUN SysCall`.
-
-#### Internal Procedure: Cursor Off (Label 50)
-
-  * This subroutine calls an external procedure `RUN GFX2("CUROFF")` and `RETURN`s.
-
-#### Internal Procedure: Cursor On (Label 60)
-
-  * This subroutine calls an external procedure `RUN GFX2("CURON")` and `RETURN`s.
-
-#### Primary Error Trap (Label 100)
-
-  * This block is reached via `ON ERROR GOTO 100`.
-  * It captures the error code using `er:=ERR` if `er` is not already set. (Valid: "ERR" function)
-  * It handles specific error codes (216, 218) with custom `PRINT #2` messages.
-  * It cleans up by closing `filepath`, printing the `er` number, calling `GOSUB 60` (Turn Cursor On), and `END`ing.
-
------
-
-### 3\. Process and Workflow Synthesis (PWS) Templates
-
-#### PWS Template: Turn Pause On (Label 30)
-
-```basic
-(* (PWS Template: Turn Pause On) *)
-(*
-(* 1. PURPOSE: Calls an external procedure (SysCall) to enable OS-9 page pause. *)
-(* 2. USES: packet, callcode, regs *)
-(* 3. VALIDATION (from Basic09-only-reference.md): *)
-(* - Assignment: LET (implied) *)
-(* - Constants: $8E (Hexadecimal) *)
-(* - Functions: ADDR() *)
-(* - Statements: RUN, RETURN *)
-(*
-DIM packet(32):BYTE
-DIM callcode:BYTE
-TYPE REG=cc,a,b,dp:BYTE; x,y,u:INTEGER
-DIM regs:REG
-*)
-
-30 packet(8):=1
-callcode:=$8E
-regs.a:=2
-regs.b:=$00
-regs.x:=ADDR(packet)
-RUN SysCall(callcode,regs)
-RETURN
-```
-
-#### PWS Template: Turn Pause Off (Label 40)
-
-```basic
-(* (PWS Template: Turn Pause Off) *)
-(*
-(* 1. PURPOSE: Calls an external procedure (SysCall) to disable OS-9 page pause. *)
-(* 2. USES: packet, callcode, regs *)
-(* 3. VALIDATION (from Basic09-only-reference.md): *)
-(* - Assignment: LET (implied) *)
-(* - Constants: $8E (Hexadecimal) *)
-(* - Functions: ADDR() *)
-(* - Statements: RUN, RETURN *)
-(*
-DIM packet(32):BYTE
-DIM callcode:BYTE
-TYPE REG=cc,a,b,dp:BYTE; x,y,u:INTEGER
-DIM regs:REG
-*)
-
-40 packet(8):=0
-callcode:=$8E
-regs.a:=2
-regs.b:=$00
-regs.x:=ADDR(packet)
-RUN SysCall(callcode,regs)
-RETURN
-```
-
-#### PWS Template: Cursor Off (Label 50)
-
-```basic
-(* (PWS Template: Cursor Off) *)
-(*
-(* 1. PURPOSE: Calls an external procedure (GFX2) to turn the terminal cursor off. *)
-(* 2. USES: (None) *)
-(* 3. VALIDATION (from Basic09-only-reference.md): *)
-(* - Statements: RUN, RETURN *)
-(* - Constants: "CUROFF" (String) *)
-*)
-
-50 RUN GFX2("CUROFF")
-RETURN
-```
-
-#### PWS Template: Cursor On (Label 60)
-
-```basic
-(* (PWS Template: Cursor On) *)
-(*
-(* 1. PURPOSE: Calls an external procedure (GFX2) to turn the terminal cursor on. *)
-(* 2. USES: (None) *)
-(* 3. VALIDATION (from Basic09-only-reference.md): *)
-(* - Statements: RUN, RETURN *)
-(* - Constants: "CURON" (String) *)
-*)
-
-60 RUN GFX2("CURON")
-RETURN
-```
+* **`PROCEDURE unpack`**
+    * **Purpose:** Serves as the main controller for an I-Code decompiler. It reads a target file, parses module headers, and orchestrates a series of external procedures to generate an unpacked Basic09 source file.
+    * **Parameters (`PARAM`):**
+        * `infile`: The full path to the packed Basic09 file.
+        * `option`: Flags for `-V` (Verbose) or `-O` (Output to StdOut only).
+    * **Main Logic:**
+        1.  Initializes local variables, flags, and version info.
+        2.  Sets an error handler `ON ERROR GOTO 10` and parses the `option` parameter.
+        3.  Sets an error handler `ON ERROR GOTO 20` and validates the `infile` parameter. If `infile` is missing or invalid (e.g., starts with '-'), jumps to the help screen at line 20.
+        4.  Sets the main error handler `ON ERROR GOTO 100`.
+        5.  `OPEN`s the `infile` on path `filepath`.
+        6.  Calls `RUN SysCall` to check OS-9's page pause status. If it is on, calls `GOSUB 40` to turn it off.
+        7.  Calls `GOSUB 50` to turn the cursor off.
+        8.  Calls `RUN SysCall` to get the total `filesize`.
+        9.  Enters the main `WHILE NOT(EOF(#filepath))` loop to process one or more modules in the file.
+        10. `SEEK`s to the `start` of the module and `GET`s its `header`.
+        11. Validates the header sync bytes (`$87CD`). If not executable, prints an error and `END`s.
+        12. Extracts the `modname`.
+        13. Validates the module type. If not Basic09 I-Code (`$22`), it attempts to read an alternate header, prints a "Skipping" message, and advances the `start` pointer.
+        14. If it is I-Code, it calculates offsets (`execoff`, `symtabOff`, `descOff`).
+        15. If `outfile` flag is true, `CREATE`s the destination `.B09` file.
+        16. Prints the `PROCEDURE [modname]` line to the screen and (if active) the output file.
+        17. Sequentially `RUN`s the four external decoder parts ("udecode", "udefVars", "ubuildSrc", "uinstruction"), passing parameters.
+        18. `KILL`s each part after use and checks the `er` variable. If `er > 0`, jumps to the error handler at line 100.
+        19. Prints the `END [modname]` footer to screen and (if active) the output file.
+        20. `CLOSE`s the `outpath` and advances the `start` pointer to the next module.
+        21. After the `WHILE` loop completes, `CLOSE`s the `filepath`.
+        22. Calls `GOSUB 60` to restore the cursor.
+        23. If `ppause` was originally on, calls `GOSUB 30` to restore it.
+        24. `END`s the program.
+    * **Subroutines (GOSUB):**
+        * `Line 30:` Turns OS-9 page pause ON via `RUN SysCall`.
+        * `Line 40:` Turns OS-9 page pause OFF via `RUN SysCall`.
+        * `Line 50:` Turns the cursor OFF via `RUN GFX2("CUROFF")`.
+        * `Line 60:` Turns the cursor ON via `RUN GFX2("CURON")`.
+    * **Error Handling:**
+        * `Line 10:` Local trap for option parsing, jumps to `20` on error.
+        * `Line 20:` (Help Screen) Prints program syntax and help text. `CLOSE`s `filepath` if open and `END`s.
+        * `Line 100:` (Main Trap) Reads the error code from `ERR`. Prints specific messages for "File Not Found" (216) or "File Already Exists" (218). Prints the generic `ERROR #`, `CLOSE`s `filepath`, restores the cursor (`GOSUB 60`), and `END`s.
