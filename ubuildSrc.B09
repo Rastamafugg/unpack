@@ -287,6 +287,7 @@ PROCEDURE ubuildSrc
  ucCnt:=0
  tVar:=0
  source:="" \REM source statement
+ tnTyp:=3 \REM no active TYPE/DIM/PARAM statement
  
  (* nTyp = 0: TYPE field variables, all types
  (* nTyp = 1: DIM types BYTE, INTEGER, REAL, BOOLEAN, STRING, record or array
@@ -305,6 +306,11 @@ PROCEDURE ubuildSrc
  REPEAT 
    SEEK #vPath,recNum*SIZE(varFRec)+2
    GET #vPath,varFRec \REM get next record
+
+   IF source<>"" AND varRec(recNum).nTyp<>tnTyp THEN
+     GOSUB 210 \REM end of type
+     GOSUB 220 \REM write completed statement
+   ENDIF
  
    IF varRec(recNum).nTyp=0 THEN  \REM TYPE statements
      (* Start TYPE Statements *)
@@ -330,6 +336,7 @@ PROCEDURE ubuildSrc
            rec(recCnt).recID:=varFRec.vp2.pVar \REM pVar = rec# of record variable
            rec(recCnt).recName:=typName
            recCnt:=recCnt+1
+           tnTyp:=0
            source:="TYPE "+typName+"=" \REM set beginning of statement
          ENDIF 
        REM ==================================
@@ -361,19 +368,10 @@ PROCEDURE ubuildSrc
            (* a diff number, end of statement, if pVar=0, not a field *)
            (* variable, so end of statement *)
            IF varFRec.vp2.pVar<>rec(recCnt-1).recID OR varFRec.vp2.pVar=0 THEN 
-             IF verbose THEN 
-               PRINT #2, source
-             ELSE
-               PRINT #2,".";
-             ENDIF 
-             IF outExists THEN 
-               PRINT #outPath,source
-             ENDIF 
-             source:="" \REM clear source for next statement
+             GOSUB 220 \REM write completed statement
              tName:=varFRec.vp2.vName \REM set last var name
              tVar:=varFRec.vp2.pVar
              tStrLen:=varFRec.vp2.vStrLen
-             tnTyp:=varRec(recNum).nTyp
              IF SUBSTR("c",tName)>0 THEN 
                tRec:=varFRec.vp2.vRecNum
                tSiz:=varFRec.vp1.dsvSiz
@@ -409,9 +407,11 @@ PROCEDURE ubuildSrc
      (* nTyp separates user named variables (0-TYPE, 1=DIM and 2=PARAM) from subroutine names *)
      (* and internal variables associated to TO and STEP values in FOR/NEXT loops *)
  15  IF source="" AND varRec(recNum).nTyp=1 THEN  \REM if a new DIM statement
+       tnTyp:=1
        source:="DIM "+varFRec.vp2.vName
      ELSE 
        IF source="" AND varRec(recNum).nTyp=2 THEN  \REM if a new PARAM statement
+         tnTyp:=2
          source:="PARAM "+varFRec.vp2.vName
        ENDIF 
      ENDIF 
@@ -469,18 +469,9 @@ PROCEDURE ubuildSrc
            GOSUB 210 \REM end of type
            (* End of statement? *)
            IF varFRec.vp2.pVar=0 THEN 
-             IF verbose THEN 
-               PRINT #2, source
-             ELSE
-               PRINT #2,".";
-             ENDIF 
-             IF outExists THEN 
-               PRINT #outPath,source
-             ENDIF 
-             source:="" \REM clear source for next statement
+             GOSUB 220 \REM write completed statement
              tName:=varFRec.vp2.vName \REM set last var name
              tStrLen:=varFRec.vp2.vStrLen
-             tnTyp:=varRec(recNum).nTyp
              IF SUBSTR("C",tName)>0 THEN 
                tRec:=varFRec.vp2.vRecNum
                tSiz:=varFRec.vp1.dsvSiz
@@ -499,43 +490,16 @@ PROCEDURE ubuildSrc
            tRec:=varFRec.vp2.vRecNum
            tSiz:=varFRec.vp1.dsvSiz
          ENDIF 
-       ENDIF 
-     ENDIF 
-     (* Process last variable *)
-     (* This section may be unnecessary *)
-     IF recNum=varCount-1 OR recNum<varCount-1 AND SUBSTR("0",varFRec.vp2.vName)=0 THEN 
-       IF SUBSTR("S",tName)>0 THEN 
-         tStrLen:=varFRec.vp2.vStrLen
-       ENDIF 
-       GOSUB 210 \REM end of type
-       IF verbose THEN 
-         PRINT #2, source
-       ELSE
-         PRINT #2,".";
-       ENDIF 
-       IF outExists THEN 
-         PRINT #outPath,source
-       ENDIF 
-     ENDIF 
-     REM ================================
-     (* end of user variables *)
-     IF tnTyp<3 THEN 
-       GOSUB 210 \REM end of type
-       IF verbose THEN 
-         PRINT #2, source
-       ELSE
-         PRINT #2,".";
-       ENDIF 
-       IF outExists THEN 
-         PRINT #outPath,source
-       ENDIF 
-       tnTyp:=varRec(recNum).nTyp
-       source:=""
-     ENDIF 
-   REM ================================
-   ENDIF 
+        ENDIF 
+      ENDIF 
+    ENDIF 
    recNum:=recNum+1
  UNTIL recNum=varCount
+
+ IF source<>"" THEN
+   GOSUB 210 \REM end of final type
+   GOSUB 220 \REM write final statement
+ ENDIF
  
  (* Close Files *)
  CLOSE #vPath
@@ -554,10 +518,10 @@ PROCEDURE ubuildSrc
      IF RIGHT$(varFRec.vp2.vName,2)="()" THEN 
        varFRec.vp2.vName:=LEFT$(varFRec.vp2.vName,LEN(varFRec.vp2.vName)-2)+varFRec.vp2.vArray
      ENDIF 
-   ENDIF 
+ ENDIF 
  ENDIF 
  RETURN 
- 
+
  210 IF LEFT$(tName,1)="P" THEN 
    posVal:=2
  ELSE 
@@ -612,7 +576,26 @@ PROCEDURE ubuildSrc
    ENDIF 
  ENDIF 
  RETURN 
+
+ 220 IF verbose THEN
+   PRINT #2, source
+ ELSE
+   PRINT #2,".";
+ ENDIF
+ IF outExists THEN
+   PRINT #outPath,source
+ ENDIF
+ source:="" \REM clear source for next statement
+ tnTyp:=3
+ tName:=""
+ tStrLen:=""
+ tVar:=0
+ tRec:=0
+ tSiz:=0
+ varCntr:=1
+ RETURN
  
+
  (* Display Counts *)
  268 PRINT #2,"Description Area Entries: "; dsatCnt
  RETURN 
